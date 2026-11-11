@@ -65,19 +65,33 @@ def run_agent(pnr: str, last_name: str, message: str) -> str:            # ✏�
         thinking={"type": "adaptive"}, tools=tools, messages=messages,
     )
 
-    answer = ""
     turns = 1
     while response.stop_reason == "tool_use" and turns < MAX_TOOL_CALLS:
-        messages.append({"role": "assistant", "content": text_of(response)})
+        messages.append({"role": "assistant", "content": response.content})
         messages.append({"role": "user", "content": tool_results(response)})
-        answer = text_of(response)
         response = client.messages.create(
             model=MODEL, max_tokens=4096, system=runtime_preamble() + SYSTEM_PROMPT + TONE_ADDENDUM,
             thinking={"type": "adaptive"}, tools=tools, messages=messages,
         )
         turns += 1
 
-    return answer
+    if response.stop_reason == "tool_use":
+        # The cap cut the loop off while Claude was still asking for a tool, so there
+        # is no answer to return. Hand the case to a human and tell the customer so.
+        asked = sorted({b.name for b in response.content if getattr(b, "type", None) == "tool_use"})
+        handoff = execute_tool("escalate_to_human", {
+            "pnr": pnr,
+            "reason": "Agent reached its limit of %d turns without finishing" % MAX_TOOL_CALLS,
+            "summary_for_human": "Automated handling stopped after %d turns while still "
+                                 "requesting: %s. Nothing was rebooked or issued by this "
+                                 "handoff; please review the conversation." % (turns, ", ".join(asked) or "a tool"),
+        })
+        ref = handoff.get("escalation_id") if isinstance(handoff, dict) else None
+        return ("I wasn't able to finish this for you in chat, so I've passed your case to a "
+                "member of our team who will pick it up with the details so far."
+                + (" Your reference is %s." % ref if ref else ""))
+
+    return text_of(response)
 
 
 def tool_list() -> List[Dict[str, Any]]:                   # ✏️ Build 2, step 2.2
@@ -118,18 +132,44 @@ def build_tools() -> List[Dict[str, Any]]:                 # ✏️ Build 1, ste
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "flight_no": {"type": "string"},
-                    "date": {"type": "string", "description": "MM/DD/YYYY"},
+                    "flight_no": {
+                        "type": "string",
+                        "description": "Flight number as on the booking, e.g. LK415.",
+                    },
+                    "date": {
+                        "type": "string",
+                        "description": (
+                            "The flight's local departure date, formatted strictly as "
+                            "YYYY-MM-DD (e.g. 2025-05-08). Always convert to this format, "
+                            "even if the booking or customer writes the date another way."
+                        ),
+                    },
                 },
                 "required": ["flight_no", "date"],
             },
         },
         {
             "name": "search_alternatives",
-            "description": "search",
+            "description": (
+                "Find rebooking options for a customer whose flight was cancelled, badly "
+                "delayed or missed: ranked alternative itineraries with flight numbers, "
+                "dates, times, cabin, seats left and any fare difference. Call it after you "
+                "have looked up the booking and confirmed the disruption with "
+                "get_flight_status, and only when the customer wants to travel; it does not "
+                "hold or book anything. Takes only the PNR: it searches the same route as "
+                "the disrupted segment on the booking, and leaves out the flight that was "
+                "disrupted. You cannot pass it a date. If the customer prefers particular "
+                "dates, apply that preference to the options it returns rather than "
+                "expecting the tool to filter."
+            ),
             "input_schema": {
                 "type": "object",
-                "properties": {"pnr": {"type": "string"}},
+                "properties": {
+                    "pnr": {
+                        "type": "string",
+                        "description": "The 6-character booking reference from lookup_booking.",
+                    }
+                },
                 "required": ["pnr"],
             },
         },
@@ -215,7 +255,21 @@ def build_tools() -> List[Dict[str, Any]]:                 # ✏️ Build 1, ste
         },
         {
             "name": "send_confirmation",
-            "description": "Send the customer a written confirmation of what was just done. Benign.",
+            "description": (
+                "Send the customer a written confirmation. A message to a customer cannot "
+                "be unsent. Call it only once, at the end, when the conversation has reached "
+                "a conclusive outcome with an authenticated customer: a rebooking was "
+                "confirmed, a voucher was issued, or the policy check showed the customer "
+                "is owed nothing. Do not call it mid-conversation, before the outcome is "
+                "final, when the booking could not be authenticated or the customer could "
+                "not be confirmed, or after handing the conversation to a human: the human "
+                "concludes it. A voucher that came back pending human approval is not "
+                "final: tell the customer in chat that the request is submitted and they "
+                "will get a confirmation once it is approved, and do not call this. If a "
+                "rebooking failed (an error, an expired hold, a missing token), never "
+                "confirm it as done: try to resolve it in the chat with more information "
+                "from the customer, or escalate to a human."
+            ),
             "input_schema": {
                 "type": "object",
                 "properties": {"pnr": {"type": "string"}, "message": {"type": "string"}},
