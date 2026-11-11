@@ -77,7 +77,25 @@ def run_agent(pnr: str, last_name: str, message: str) -> str:            # ✏�
         )
         turns += 1
 
-    #return answer
+    # Cap handoff: the loop ended while Claude was still asking for a tool, so
+    # there is no final answer. Hand the case to a human instead of returning "".
+    if response.stop_reason == "tool_use":
+        pending = [b.name for b in response.content if getattr(b, "type", None) == "tool_use"]
+        escalation = execute_tool("escalate_to_human", {
+            "pnr": pnr,
+            "reason": f"Agent reached the {MAX_TOOL_CALLS}-turn tool cap without finishing.",
+            "summary_for_human": (
+                f"Customer message: {message!r}. The agent was still asking for: "
+                f"{', '.join(pending) or 'a tool'}. Review the conversation so far and continue."
+            ),
+        })
+        ref = escalation.get("escalation_id", "") if isinstance(escalation, dict) else ""
+        return (
+            "I wasn't able to finish this for you in chat, so I've passed your case to a "
+            "member of our team who will pick it up with the details so far."
+            + (f" Your reference is {ref}." if ref else "")
+        )
+
     return text_of(response)  # ✏️ Build 1, step 1.2: return the last text block, not the first
 
 
@@ -143,7 +161,8 @@ def build_tools() -> List[Dict[str, Any]]:                 # ✏️ Build 1, ste
                 "times, cabin, seats left and any fare difference. Call it after you have "
                 "looked up the booking and confirmed the disruption with get_flight_status, "
                 "and only when the customer wants to travel; it does not hold or book "
-                "anything."
+                "anything. It takes only the PNR: it cannot be given a date or flight "
+                "number."
             ),
             "input_schema": {
                 "type": "object",
@@ -182,10 +201,19 @@ def build_tools() -> List[Dict[str, Any]]:                 # ✏️ Build 1, ste
         },
         {
             "name": "hold_seat",
-            "description": "Place a 15-minute hold on one alternative. Reversible. It simply expires.",
+            "description": (
+                "Hold one seat on the alternative the customer has chosen, for 15 minutes, "
+                "so it cannot be taken while they decide. Call it only after "
+                "search_alternatives has returned options and the customer has picked one; "
+                "never on your own guess. Reversible: the hold simply expires. Returns a "
+                "hold_id, which confirm_rebooking needs. A hold is not a rebooking."
+            ),
             "input_schema": {
                 "type": "object",
-                "properties": {"option_id": {"type": "string"}, "pnr": {"type": "string"}},
+                "properties": {
+                    "option_id": {"type": "string", "description": "An option_id exactly as returned by search_alternatives for the option the customer chose."},
+                    "pnr": {"type": "string"},
+                },
                 "required": ["option_id", "pnr"],
             },
         },
