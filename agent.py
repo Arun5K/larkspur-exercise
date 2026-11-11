@@ -325,23 +325,26 @@ def run_agent(pnr: str, last_name: str, message: str) -> str:            # ✏�
         )
         turns += 1
 
+    # Cap handoff: the loop ended while Claude was still asking for a tool, so
+    # there is no final answer. Hand the case to a human instead of returning "".
     if response.stop_reason == "tool_use":
-        # The cap cut the loop off while Claude was still asking for a tool, so there
-        # is no answer to return. Hand the case to a human and tell the customer so.
-        asked = sorted({b.name for b in response.content if getattr(b, "type", None) == "tool_use"})
-        handoff = execute_tool("escalate_to_human", {
+        pending = [b.name for b in response.content if getattr(b, "type", None) == "tool_use"]
+        escalation = execute_tool("escalate_to_human", {
             "pnr": pnr,
-            "reason": "Agent reached its limit of %d turns without finishing" % MAX_TOOL_CALLS,
-            "summary_for_human": "Automated handling stopped after %d turns while still "
-                                 "requesting: %s. Nothing was rebooked or issued by this "
-                                 "handoff; please review the conversation." % (turns, ", ".join(asked) or "a tool"),
+            "reason": f"Agent reached the {MAX_TOOL_CALLS}-turn tool cap without finishing.",
+            "summary_for_human": (
+                f"Customer message: {message!r}. The agent was still asking for: "
+                f"{', '.join(pending) or 'a tool'}. Review the conversation so far and continue."
+            ),
         })
-        ref = handoff.get("escalation_id") if isinstance(handoff, dict) else None
-        return ("I wasn't able to finish this for you in chat, so I've passed your case to a "
-                "member of our team who will pick it up with the details so far."
-                + (" Your reference is %s." % ref if ref else ""))
+        ref = escalation.get("escalation_id", "") if isinstance(escalation, dict) else ""
+        return (
+            "I wasn't able to finish this for you in chat, so I've passed your case to a "
+            "member of our team who will pick it up with the details so far."
+            + (f" Your reference is {ref}." if ref else "")
+        )
 
-    return text_of(response)
+    return text_of(response)  # ✏️ Build 1, step 1.2: return the last text block, not the first
 
 
 def tool_list() -> List[Dict[str, Any]]:                   # ✏️ Build 2, step 2.2
@@ -408,7 +411,7 @@ def build_tools() -> List[Dict[str, Any]]:                 # ✏️ Build 1, ste
                 "get_flight_status, and only when the customer wants to travel; it does not "
                 "hold or book anything. Takes only the PNR: it searches the same route as "
                 "the disrupted segment on the booking, and leaves out the flight that was "
-                "disrupted. You cannot pass it a date. If the customer prefers particular "
+                "disrupted. You cannot pass it a date or a flight number. If the customer prefers particular "
                 "dates, apply that preference to the options it returns rather than "
                 "expecting the tool to filter."
             ),
@@ -449,10 +452,19 @@ def build_tools() -> List[Dict[str, Any]]:                 # ✏️ Build 1, ste
         },
         {
             "name": "hold_seat",
-            "description": "Place a 15-minute hold on one alternative. Reversible. It simply expires.",
+            "description": (
+                "Hold one seat on the alternative the customer has chosen, for 15 minutes, "
+                "so it cannot be taken while they decide. Call it only after "
+                "search_alternatives has returned options and the customer has picked one; "
+                "never on your own guess. Reversible: the hold simply expires. Returns a "
+                "hold_id, which confirm_rebooking needs. A hold is not a rebooking."
+            ),
             "input_schema": {
                 "type": "object",
-                "properties": {"option_id": {"type": "string"}, "pnr": {"type": "string"}},
+                "properties": {
+                    "option_id": {"type": "string", "description": "An option_id exactly as returned by search_alternatives for the option the customer chose."},
+                    "pnr": {"type": "string"},
+                },
                 "required": ["option_id", "pnr"],
             },
         },
