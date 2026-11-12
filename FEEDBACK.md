@@ -3,7 +3,7 @@
 **To:** Room 7  
 **From:** Larkspur client review agent, on behalf of Priya Raghavan  
 **Re:** the disruption-care agent you walked us through in our last session  
-**Generated:** 2026-11-12 09:55
+**Generated:** 2026-11-12 10:01
 
 ## Priya's note
 
@@ -32,35 +32,35 @@ Larkspur pointed a review agent at your repository. It read the
 code. It did not run your agent, and the only file it changed is this one. Each
 item below names the file and the line it is about.
 
-**1. PITCH.md still holds only its template labels: Built, Does, Number, Safety check, Next, Still broken and Lever have no values.**
+**1. agent.py defines a 10th tool, followup_guidance, and its 567-character description is the one that sits in the prompt on every turn.**
 
-The Lever line reads "Lever: <cost | speed | intelligence>" with the choice unmade, and the Number line is blank. Nothing in the repository says what you are optimising or by how much. That leaves Priya's question with no claim from you to test.
+The diff adds EXTRA_TOOLS with followup_guidance and a LOCAL_TOOLS executor of the same name, so tool_list() now returns ten schemas where the pack ships nine. The wire run in readout-trace.json shows 14650 tokens in across 4 API turns and a tool list that carried all ten schemas each time. followup_guidance was never called in that run: the tools called were lookup_booking, get_flight_status, check_policy.
 
-Fill in the Number and Lever lines of PITCH.md, then paste the file.
+Run python3 run.py --tool-tax and paste the per-tool token table, with the followup_guidance row included.
 
-**2. There is no evals/cases.json, and readout-trace.json records one run: 4 API turns, 3 tool calls, 14650 tokens in, 741 out.**
+**2. followup_guidance reads data/americas/transcripts_sample.jsonl on every call and appends a note for any row with reopened_within_72h.**
 
-The tools called in that run were lookup_booking, get_flight_status, check_policy, and the trace ends there with no search_alternatives or hold_seat. Wall clock was 8.8s. One booking is the only evidence of behaviour in the repository.
+The function opens _TRANSCRIPTS, parses every line, and filters on intent_label, disruption.status and reopened_within_72h. The only text it can emit from those rows comes from the three-entry _CHECK_WITH_CUSTOMER dict keyed by ids like LKS-20250117-0042, so a matching row with any other id adds nothing. Nothing in the material shows how many lines the file has or what that read costs per call.
 
-Run python3 run.py --all --trace and paste the totals footer.
+Run python3 run.py K7PQ2M --trace and paste the totals footer along with any followup_guidance line, so the tool's turn and token cost is on the page.
 
-**3. Your diff added followup_guidance to agent.py as an 11th tool (EXTRA_TOOLS: 1, a 567-character description) with a 333-line addition.**
+**3. No eval cases exist in the repository, and readout-trace.json holds one run of three tool calls, so nothing here backs a before and after.**
 
-The scan finds 10 schemas against 9 shipped, so every turn now carries a schema that did not exist before. Its input is two enums, resolution_outcome and disruption_type. The only thing it reads at runtime is disruption_policy.json plus a sample transcripts file. The cost of carrying it on each of the 4 turns in the committed trace has not been measured.
+The scan reports no evals/cases.json. The committed wire run is a single conversation: 4 API turns, 8.8s, 14650 in, 741 out. The banked gates are 1.2, 1.3, 1.4 only, so the work in 2.1 and 2.2 that adds followup_guidance has no gate recorded in readout.html.
 
-Run python3 run.py --tool-tax and paste its output.
+Run python3 verify.py 2.1 and python3 verify.py 2.2 and paste both outputs.
 
-**4. search_alternatives takes only pnr, and its 688-character description says you cannot pass it a date or a flight number.**
+**4. The wire run shows prompt caching at 0 read and 0 written, with 14650 input tokens spent over 4 turns.**
 
-A customer who asks for Thursday gets whatever the tool returns for the same route, with the disrupted flight left out. The date preference has to be applied by the model to the returned options. The schema fixes that limit, and a different model sees the same schema.
+The static scan finds no cache_control anywhere in agent.py. The trace footer gives hit ratio None. run_agent resends runtime_preamble() + SYSTEM_PROMPT + TONE_ADDENDUM and the whole tools list on every pass through the while loop, and TONE_ADDENDUM is still 0 characters.
 
-Run python3 run.py --show-tools and paste the search_alternatives entry, then run a booking where the customer names a date and paste the trace.
+Run python3 bench.py --label before --stage 1 --runs 3 and python3 bench.py --compare before before, and paste the compare output.
 
-**5. agent.py has no cache_control, and the committed trace shows 0 cache read, 0 written, hit ratio None across 14650 input tokens.**
+**5. The cap handoff in run_agent has no recorded run behind it, and MAX_TOOL_CALLS = 8 is the number Priya would be asked to trust.**
 
-Every turn resends runtime_preamble() + SYSTEM_PROMPT + TONE_ADDENDUM plus 10 tool schemas, and send_confirmation alone has a 906-character description. TONE_ADDENDUM is still 0 characters. MODEL is imported from support, so the model choice never appears in this file.
+When the loop exits with stop_reason still tool_use, run_agent calls execute_tool("escalate_to_human") and returns a fixed handoff message with the escalation id. The committed trace stopped at 3 tool calls over 4 turns, so the path has not been exercised in the evidence. A larger model changes how often a booking reaches turn 8 and leaves the cap and this handoff text exactly as they are.
 
-Run python3 bench.py --label before --stage 1 --runs 3 and paste the output.
+Run python3 run.py --all --trace and paste the totals footer, with every PNR that reaches escalate_to_human marked.
 
 ## Your four answers
 
