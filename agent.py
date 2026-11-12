@@ -9,6 +9,8 @@ Where you edit:   grep -n '✏' agent.py   (six marks, one per place)
 Steps and gates:  https://anthropicpartnerbasecamp.bts.com/
 """
 from __future__ import annotations
+import re
+from pathlib import Path
 from typing import Any, Dict, List
 from support import (MODEL, SYSTEM_PROMPT, call_local, execute_tool, mcp_client,
                      new_session, next_available_day, record_tool_result,
@@ -17,8 +19,86 @@ from support import (MODEL, SYSTEM_PROMPT, call_local, execute_tool, mcp_client,
 MAX_TOOL_CALLS = 8  # Larkspur's own build capped the loop here; then a human takes over.
 
 TONE_ADDENDUM = ""                       # ✏️ Build 4, step 4.1, intelligence goal
-EXTRA_TOOLS: List[Dict[str, Any]] = []   # ✏️ Build 2, step 2.1: schemas for the tools you add
-LOCAL_TOOLS: Dict[str, Any] = {}         # ✏️ Build 2, step 2.1: the functions behind them
+EXTRA_TOOLS: List[Dict[str, Any]] = [    # ✏️ Build 2, step 2.1: schemas for the tools you add
+    {
+        "name": "fare_rules",
+        "description": (
+            "Explains passenger entitlements under Larkspur's Handbook "
+            "(fare_rules_excerpt.md). Use this tool when a customer asks why they are or "
+            "are not receiving hotel accommodation or other assistance following a flight "
+            "cancellation or disruption. It evaluates the relevant fare rules and explains "
+            "the reason for eligibility or ineligibility. It does not issue vouchers, make "
+            "bookings, or perform rebooking."
+        ),
+        "input_schema": {
+            "type": "object",
+            "properties": {
+                "booking_code": {
+                    "type": "string",
+                    "description": "Customer's booking reference.",
+                },
+                "customer_question": {
+                    "type": "string",
+                    "description": "Customer's question about fare-rule entitlement.",
+                },
+                "passenger_count": {
+                    "type": "integer",
+                    "description": "Number of passengers affected.",
+                },
+                "disruption_type": {
+                    "type": "string",
+                    "description": "Type of flight disruption.",
+                },
+            },
+            "required": ["booking_code", "customer_question"],
+        },
+    },
+]
+FARE_RULES_PATH = Path(__file__).parent / "data" / "americas" / "fare_rules_excerpt.md"
+_STOPWORDS = {
+    "the", "and", "for", "are", "was", "were", "our", "you", "your", "can", "get", "have",
+    "does", "not", "why", "with", "this", "that", "from", "will", "while", "until", "there",
+    "flight", "flights", "next", "available", "entitled", "stay", "three", "when", "what",
+}
+
+
+def fare_rules(booking_code: str = "", customer_question: str = "", passenger_count: Any = None,
+               disruption_type: str = "", **_ignored: Any) -> Dict[str, Any]:
+    """Look up the Handbook sections that answer the question. Text comes only from the
+    file; if no section matches, say so rather than answer from memory."""
+    try:
+        text = FARE_RULES_PATH.read_text(encoding="utf-8")
+    except OSError as exc:
+        return {"found": False, "error": f"Handbook file could not be read: {exc}"}
+
+    # split on '### ' headings; the title line and disclaimer before section 4 are skipped
+    sections = [s.strip() for s in re.split(r"(?m)^(?=### )", text) if s.startswith("### ")]
+
+    words = {w for w in re.findall(r"[a-z]+", f"{customer_question} {disruption_type}".lower())
+             if len(w) > 2 and w not in _STOPWORDS}
+    scored = []
+    for sec in sections:
+        body = sec.lower()
+        score = sum(1 for w in words if w in body)
+        if score:
+            scored.append((score, sec))
+    scored.sort(key=lambda pair: -pair[0])
+
+    if not scored:
+        return {"found": False,
+                "message": "The Handbook excerpt (fare_rules_excerpt.md) has nothing on this "
+                           "question. Do not answer it from memory; offer a human agent."}
+    return {
+        "found": True,
+        "source": "Larkspur Handbook v14.3, fare_rules_excerpt.md",
+        "booking_code": booking_code,
+        "passenger_count": passenger_count,
+        "note": "Care amounts in the Handbook are per passenger.",
+        "sections": [sec for _, sec in scored[:2]],
+    }
+
+
+LOCAL_TOOLS: Dict[str, Any] = {"fare_rules": fare_rules}   # ✏️ Build 2, step 2.1: the functions behind them
 
 
 def text_of(response) -> str:
